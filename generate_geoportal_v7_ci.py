@@ -188,41 +188,224 @@ def find_estatus_for_feature(gpkg_id, gpkg_nom, gpkg_prop, excel_by_nom, excel_b
     return None, False
 
 
-def export_geojson_via_ogr(gpkg_path):
-    """Exporta GeoJSON desde GPKG usando ogr2ogr."""
-    print(f"  Exportando GeoJSON con ogr2ogr...")
+def export_geojson_via_sqlite(gpkg_path):
+    """Exporta GeoJSON desde GPKG usando sqlite3 (sin dependencia de ogr2ogr)."""
+    print(f"  Exportando GeoJSON con sqlite3...")
     
-    # Crear archivo temporal para GeoJSON (no crear el archivo, solo el nombre)
-    temp_dir = tempfile.mkdtemp()
-    temp_geojson = os.path.join(temp_dir, 'output.geojson')
+    conn = sqlite3.connect(gpkg_path)
+    cursor = conn.cursor()
+    
+    # Obtener nombre de la tabla de features
+    cursor.execute("SELECT table_name FROM gpkg_contents WHERE data_type='features'")
+    table_name = cursor.fetchone()[0]
+    
+    # Obtener nombre de la columna de geometría
+    cursor.execute("SELECT column_name FROM gpkg_geometry_columns WHERE table_name=?", (table_name,))
+    geom_col = cursor.fetchone()[0]
+    
+    # Obtener SRID
+    cursor.execute("SELECT srs_id FROM gpkg_geometry_columns WHERE table_name=?", (table_name,))
+    srs_id = cursor.fetchone()[0]
+    
+    # Obtener nombres de columnas (excluyendo geometría)
+    cursor.execute(f"PRAGMA table_info(\"{table_name}\")")
+    columns = [row[1] for row in cursor.fetchall() if row[1] != geom_col]
+    
+    # Obtener todas las filas
+    col_names = ', '.join(f'"{c}"' for c in columns)
+    cursor.execute(f'SELECT {col_names}, "{geom_col}" FROM "{table_name}"')
+    
+    features = []
+    for row in cursor.fetchall():
+        props = {}
+        for i, col in enumerate(columns):
+            val = row[i]
+            if val is None:
+                props[col] = ''
+            elif isinstance(val, str):
+                props[col] = val.strip()
+            else:
+                props[col] = str(val)
+        
+        geom_blob = row[-1]
+        if geom_blob:
+            geojson_geom = blob_to_geojson(geom_blob, srs_id)
+            if geojson_geom:
+                features.append({
+                    "type": "Feature",
+                    "properties": props,
+                    "geometry": geojson_geom
+                })
+    
+    conn.close()
+    
+    geojson = {
+        "type": "FeatureCollection",
+        "features": features
+    }
+    
+    print(f"  Features exportados: {len(features)}")
+    return geojson
+
+
+def blob_to_geojson(blob, srs_id):
+    """Convierte un blob GeoPackage en geometría GeoJSON."""
+    import struct
     
     try:
-        # Ejecutar ogr2ogr
-        cmd = [
-            'ogr2ogr', '-f', 'GeoJSON',
-            '-t_srs', 'EPSG:4326',
-            '-lco', 'COORDINATE_PRECISION=6',
-            '-skipfailures',
-            temp_geojson, gpkg_path
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        if result.returncode != 0:
-            print(f"  ogr2ogr stderr: {result.stderr}")
-            raise RuntimeError(f"ogr2ogr falló: {result.stderr}")
+        # GPKG Geometry Encoding: https://www.geopackage.org/spec/#gpb_format
+        # Bytes 0-1: Magic 'GP'
+        if blob[0:2] != b'GP':
+            return None
         
-        # Leer el GeoJSON
-        with open(temp_geojson, 'r', encoding='utf-8') as f:
-            geojson = json.load(f)
+        # Byte 3: Flags
+        flags = blob[3]
         
-        print(f"  Features exportados: {len(geojson.get('features', []))}")
-        return geojson
+        # Bits 0-1: Geometry type
+        # Bit 2: Empty geometry
+        # Bit 3: Empty flag
+        # Bits 4-5: Envelope type (0=none, 1=xy, 2=xyz, 3=xym, 4=xyzm)
+        envelope_type = (flags >> 1) & 0x07
+        has_srid = bool(flags & 0x08)
+        
+        offset = 8  # Skip GP header (8 bytes)
+        
+        if has_srid:
+            srid = struct.unpack_from('<I', blob, offset)[0]
+            offset += 4
+        
+        # Skip envelope
+        env_sizes = {0: 0, 1: 32, 2: 48, 3: 48, 4: 64}
+        env_size = env_sizes.get(envelope_type, 0)
+        offset += env_size
+        
+        # Now we have WKB geometry
+        wkb = blob[offset:]
+        
+        # Parse WKB
+        return wkb_to_geojson(wkb)
     
-    finally:
-        # Limpiar archivos temporales
-        if os.path.exists(temp_geojson):
-            os.unlink(temp_geojson)
-        if os.path.exists(temp_dir):
-            os.rmdir(temp_dir)
+    except Exception as e:
+        print(f"  Error convirtiendo blob: {e}")
+        return None
+
+
+def wkb_to_geojson(wkb):
+    """Convierte WKB a geometría GeoJSON."""
+    import struct
+    
+    if len(wkb) < 5:
+        return None
+    
+    byte_order = wkb[0]
+    endian = '<' if byte_order == 1 else '>'
+    
+    geom_type = struct.unpack_from(endian + 'I', wkb, 1)[0]
+    base_type = geom_type & 0xFFFF
+    
+    offset = 5
+    
+    if base_type == 1:  # Point
+        x, y = struct.unpack_from(endian + 'dd', wkb, offset)
+        return {"type": "Point", "coordinates": [round(x, 6), round(y, 6)]}
+    
+    elif base_type == 2:  # LineString
+        num_points = struct.unpack_from(endian + 'I', wkb, offset)[0]
+        offset += 4
+        coords = []
+        for _ in range(num_points):
+            x, y = struct.unpack_from(endian + 'dd', wkb, offset)
+            coords.append([round(x, 6), round(y, 6)])
+            offset += 16
+        return {"type": "LineString", "coordinates": coords}
+    
+    elif base_type == 3:  # Polygon
+        num_rings = struct.unpack_from(endian + 'I', wkb, offset)[0]
+        offset += 4
+        rings = []
+        for _ in range(num_rings):
+            num_points = struct.unpack_from(endian + 'I', wkb, offset)[0]
+            offset += 4
+            ring = []
+            for _ in range(num_points):
+                x, y = struct.unpack_from(endian + 'dd', wkb, offset)
+                ring.append([round(x, 6), round(y, 6)])
+                offset += 16
+            rings.append(ring)
+        return {"type": "Polygon", "coordinates": rings}
+    
+    elif base_type == 4:  # MultiPoint
+        num_geoms = struct.unpack_from(endian + 'I', wkb, offset)[0]
+        offset += 4
+        points = []
+        for _ in range(num_geoms):
+            pt = wkb_to_geojson(wkb[offset:])
+            if pt and pt['type'] == 'Point':
+                points.append(pt['coordinates'])
+            offset += _get_wkb_length(wkb[offset:])
+        return {"type": "MultiPoint", "coordinates": points}
+    
+    elif base_type == 5:  # MultiLineString
+        num_geoms = struct.unpack_from(endian + 'I', wkb, offset)[0]
+        offset += 4
+        lines = []
+        for _ in range(num_geoms):
+            line = wkb_to_geojson(wkb[offset:])
+            if line and line['type'] == 'LineString':
+                lines.append(line['coordinates'])
+            offset += _get_wkb_length(wkb[offset:])
+        return {"type": "MultiLineString", "coordinates": lines}
+    
+    elif base_type == 6:  # MultiPolygon
+        num_geoms = struct.unpack_from(endian + 'I', wkb, offset)[0]
+        offset += 4
+        polys = []
+        for _ in range(num_geoms):
+            poly = wkb_to_geojson(wkb[offset:])
+            if poly and poly['type'] == 'Polygon':
+                polys.append(poly['coordinates'])
+            offset += _get_wkb_length(wkb[offset:])
+        return {"type": "MultiPolygon", "coordinates": polys}
+    
+    return None
+
+
+def _get_wkb_length(wkb):
+    """Estima la longitud de un WKB geometry."""
+    import struct
+    
+    if len(wkb) < 5:
+        return len(wkb)
+    
+    byte_order = wkb[0]
+    endian = '<' if byte_order == 1 else '>'
+    geom_type = struct.unpack_from(endian + 'I', wkb, 1)[0]
+    base_type = geom_type & 0xFFFF
+    offset = 5
+    
+    if base_type == 1:  # Point
+        return offset + 16
+    
+    elif base_type in (2, 3):  # LineString or Polygon
+        num = struct.unpack_from(endian + 'I', wkb, offset)[0]
+        offset += 4
+        if base_type == 2:  # LineString
+            return offset + num * 16
+        else:  # Polygon
+            for _ in range(num):
+                npts = struct.unpack_from(endian + 'I', wkb, offset)[0]
+                offset += 4 + npts * 16
+            return offset
+    
+    elif base_type in (4, 5, 6):  # Multi geometries
+        num = struct.unpack_from(endian + 'I', wkb, offset)[0]
+        offset += 4
+        for _ in range(num):
+            sub_len = _get_wkb_length(wkb[offset:])
+            offset += sub_len
+        return offset
+    
+    return len(wkb)
 
 
 def assign_estatus_to_geojson(geojson_data, excel_by_nom, excel_by_id):
@@ -452,7 +635,7 @@ def main():
 
     print("\nExportando GeoJSON desde GPKG...")
     try:
-        geojson_data = export_geojson_via_ogr(GPKG_PATH)
+        geojson_data = export_geojson_via_sqlite(GPKG_PATH)
     except Exception as e:
         print(f"ERROR al exportar GeoJSON: {e}")
         sys.exit(1)

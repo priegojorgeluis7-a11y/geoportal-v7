@@ -32,6 +32,12 @@ jobs:
         with:
           lfs: true
 
+      - name: Forzar descarga LFS
+        run: |
+          git lfs pull
+          ls -la "poligonos finales 16 y 17.gpkg"
+          file "poligonos finales 16 y 17.gpkg"
+
       - name: Configurar Python
         uses: actions/setup-python@v5
         with:
@@ -39,16 +45,8 @@ jobs:
 
       - name: Instalar dependencias
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libgdal-dev gdal-bin
           python -m pip install --upgrade pip
           pip install requests
-
-      - name: Verificar archivos
-        run: |
-          ls -la "poligonos finales 16 y 17.gpkg"
-          file "poligonos finales 16 y 17.gpkg"
-          ogrinfo --version
 
       - name: Generar geoportal desde Google Sheets
         run: |
