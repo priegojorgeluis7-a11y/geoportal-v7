@@ -1,0 +1,68 @@
+============================================================
+  ACTUALIZAR PREDIOS - V7
+  INSTRUCCIONES DE USO
+============================================================
+
+¿QUÉ HACE ESTE PROGRAMA?
+-------------------------
+Actualiza los colores y estatus de los predios en el archivo
+GPKG usando los datos más recientes de Google Sheets.
+
+Los colores se asignan automáticamente según estas reglas:
+  - VERDE  (#00FF00) = L  = Liberado
+  - ROJO   (#FF0000) = NL = No Liberado
+  - AMARILLO (#FFFF00) = NG = Negociación
+  - CAFÉ   (#A0522D) = R  = Revisión
+
+
+¿CÓMO USARLO?
+--------------
+1. Asegúrate de tener conexión a internet
+2. Haz DOBLE CLIC en el archivo:  actualizar_predios_v7.command
+3. Se abrirá una ventana de Terminal
+4. El programa hará todo automáticamente:
+   a) Descarga los datos de Google Sheets
+   b) Actualiza los colores y estatus en el GPKG
+   c) Genera el archivo de estilo QML
+5. Al finalizar, presiona Enter para cerrar
+
+
+ARCHIVOS QUE SE GENERAN:
+-------------------------
+- poligonos_finales_coloreados_v7.gpkg  ← GPKG actualizado
+- poligonos_finales_coloreados_v7.qml   ← Estilo para QGIS
+
+
+¿QUÉ NECESITO?
+---------------
+- Mac con macOS
+- Python 3 (si no lo tienes, el programa te dirá cómo instalarlo)
+- Conexión a internet (para descargar los datos de Google Sheets)
+
+
+SOLUCIÓN DE PROBLEMAS:
+----------------------
+Si al hacer doble clic no pasa nada:
+  1. Abre Terminal
+  2. Escribe:  chmod +x (arrastra el archivo actualizar_predios_v7.command aquí)
+  3. Presiona Enter
+  4. Vuelve a hacer doble clic
+
+Si dice "Python no encontrado":
+  1. Ve a https://www.python.org/downloads/
+  2. Descarga e instala Python 3
+  3. Vuelve a hacer doble clic
+
+Si dice "No se pudo instalar requests":
+  1. Abre Terminal
+  2. Escribe:  pip3 install requests
+  3. Presiona Enter
+  4. Vuelve a hacer doble clic
+
+
+ARCHIVOS DEL PROGRAMA:
+----------------------
+- actualizar_predios_v7.command  ← Lanzador (doble clic aquí)
+- generate_colored_gpkg_v7.py    ← Script principal
+- poligonos finales 16 y 17.gpkg ← GPKG original (NO BORRAR)
+- LEEME_V7.txt                   ← Este archivo
